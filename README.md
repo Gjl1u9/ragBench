@@ -16,15 +16,20 @@ The goal is not just to answer questions, but to measure what each technique buy
 
 ## Stack
 
-Python 3.12 · uv · Qdrant · BM25 · sentence-transformers · Claude API · pytest
+Python 3.12 · uv · Qdrant · BM25 · sentence-transformers · Claude Agent SDK · pytest
+
+Generation runs through the [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview),
+authenticated with a Claude subscription rather than an API key. Retrieval metrics need no LLM
+at all; generation is evaluated on a fixed dev subset with cached responses.
 
 ## Setup
 
-Requires [uv](https://docs.astral.sh/uv/) and Docker.
+Requires [uv](https://docs.astral.sh/uv/), Docker, and Claude Code logged in to a Claude
+subscription.
 
 ```bash
 uv sync
-cp .env.example .env          # add your ANTHROPIC_API_KEY
+cp .env.example .env
 docker compose up -d          # Qdrant on localhost:6333
 uv run pytest
 ```

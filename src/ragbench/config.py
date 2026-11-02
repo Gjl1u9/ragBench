@@ -14,7 +14,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 @dataclass(frozen=True)
 class Settings:
     qdrant_url: str = os.getenv("QDRANT_URL", "http://localhost:6333")
-    anthropic_api_key: str | None = os.getenv("ANTHROPIC_API_KEY")
     data_dir: Path = PROJECT_ROOT / "data"
     results_dir: Path = PROJECT_ROOT / "results"
 
