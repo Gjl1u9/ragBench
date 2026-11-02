@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+
+# Data, indexes, and experiment outputs
+data/
+qdrant_storage/
+results/*
+!results/.gitkeep
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.DS_Store
