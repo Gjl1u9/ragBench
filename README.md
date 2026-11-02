@@ -37,7 +37,7 @@ uv run pytest
 ## Roadmap
 
 - [x] Project setup: environment, Qdrant, tests
-- [ ] Data loading and chunking
+- [x] Data loading and chunking (99.4% of train evidence resolved to paragraph ids)
 - [ ] Dense retrieval baseline
 - [ ] Evaluation harness (retrieval + answer metrics)
 - [ ] Hybrid retrieval (BM25 + dense)
