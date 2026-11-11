@@ -8,11 +8,15 @@ The goal is not just to answer questions, but to measure what each technique buy
 
 | Setup | Recall@5 | MRR | Answer F1 | Cost / query | Latency |
 |---|---|---|---|---|---|
-| Dense retrieval (baseline) | – | – | – | – | – |
+| Dense retrieval (baseline) | 0.573 | 0.463 | – | – | 15 ms |
 | + BM25 hybrid | – | – | – | – | – |
 | + Cross-encoder reranker | – | – | – | – | – |
 | + Query rewriting | – | – | – | – | – |
 | Agentic RAG | – | – | – | – | – |
+
+Numbers are on the validation split (923 scorable questions), retrieving within each question's
+paper, with `BAAI/bge-small-en-v1.5` over paragraph chunks. Retrieving 5 paragraphs at random
+would cover about 11.7% of a paper. Latency is the median per query, including query embedding.
 
 ## Stack
 
@@ -38,8 +42,9 @@ uv run pytest
 
 - [x] Project setup: environment, Qdrant, tests
 - [x] Data loading and chunking (99.4% of train evidence resolved to paragraph ids)
-- [ ] Dense retrieval baseline
-- [ ] Evaluation harness (retrieval + answer metrics)
+- [x] Dense retrieval baseline
+- [x] Evaluation harness: retrieval metrics
+- [ ] Evaluation harness: answer metrics
 - [ ] Hybrid retrieval (BM25 + dense)
 - [ ] Cross-encoder reranking
 - [ ] Agentic RAG and comparison

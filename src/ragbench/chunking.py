@@ -72,3 +72,6 @@ def window_chunks(
         if end == len(words):
             break
     return chunks
+
+
+CHUNKERS = {"paragraph": paragraph_chunks, "window": window_chunks}
