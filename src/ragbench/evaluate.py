@@ -1,6 +1,6 @@
 """Score retrieval against QASPER's gold evidence. Makes no LLM calls.
 
-Run with: uv run python -m ragbench.evaluate --split validation --chunker paragraph
+Run with: uv run python -m ragbench.evaluate --retriever hybrid --split validation
 
 Scoring rules:
 - Annotators who marked a question unanswerable, or whose evidence resolved to no paragraph,
@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 
 from qdrant_client import QdrantClient
 
+from ragbench.bm25 import BM25Retriever
 from ragbench.chunking import CHUNKERS
 from ragbench.config import settings
 from ragbench.data import Paper, Question, load_split
@@ -29,9 +30,13 @@ from ragbench.index import (
     build_index,
     collection_name,
 )
-from ragbench.retrieve import Hit, dense_search
+from ragbench.retrieve import Hit, dense_search, reciprocal_rank_fusion
 
 KS = (1, 3, 5, 10)
+RETRIEVERS = ("dense", "bm25", "hybrid")
+# How many candidates each retriever contributes before fusion. Papers average ~54 chunks,
+# so 50 leaves fusion almost the whole paper to rank.
+HYBRID_CANDIDATES = 50
 
 Ranked = Sequence[Sequence[str]]  # paragraph ids of each retrieved chunk, best first
 Retriever = Callable[[Question, int], list[Hit]]
@@ -99,6 +104,7 @@ def _git_commit() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--retriever", default="dense", choices=RETRIEVERS)
     parser.add_argument("--split", default="validation", choices=["train", "validation", "test"])
     parser.add_argument("--chunker", default="paragraph", choices=sorted(CHUNKERS))
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -113,29 +119,52 @@ def main() -> None:
     chunker = CHUNKERS[args.chunker]
     chunks = [c for p in papers for c in chunker(p)]
 
-    embedder = SentenceTransformerEmbedder(args.model)
-    client = QdrantClient(url=settings.qdrant_url)
-    collection = collection_name(args.split, args.chunker, args.model)
-    index = build_index(client, collection, chunks, embedder)
+    uses_dense = args.retriever in ("dense", "hybrid")
+    config = {
+        "retriever": args.retriever,
+        "split": args.split,
+        "chunker": args.chunker,
+        "model": args.model if uses_dense else None,
+        "retrieval_scope": "paper",
+    }
+    extra: dict = {}
 
-    def retrieve(question: Question, k: int) -> list[Hit]:
-        vector = embedder.encode_query(question.text)
-        return dense_search(client, collection, vector, question.paper_id, k)
+    if uses_dense:
+        embedder = SentenceTransformerEmbedder(args.model)
+        client = QdrantClient(url=settings.qdrant_url)
+        collection = collection_name(args.split, args.chunker, args.model)
+        extra["index"] = asdict(build_index(client, collection, chunks, embedder))
+        extra["truncated_chunks"] = embedder.count_truncated([c.text for c in chunks])
+
+        def dense(question: Question, k: int) -> list[Hit]:
+            vector = embedder.encode_query(question.text)
+            return dense_search(client, collection, vector, question.paper_id, k)
+
+    if args.retriever in ("bm25", "hybrid"):
+        bm25 = BM25Retriever(chunks)
+
+        def keyword(question: Question, k: int) -> list[Hit]:
+            return bm25.search(question.text, question.paper_id, k)
+
+    if args.retriever == "dense":
+        retrieve = dense
+    elif args.retriever == "bm25":
+        retrieve = keyword
+    else:
+        config.update(fusion="rrf", rrf_k=60, candidates=HYBRID_CANDIDATES)
+
+        def retrieve(question: Question, k: int) -> list[Hit]:
+            rankings = [dense(question, HYBRID_CANDIDATES), keyword(question, HYBRID_CANDIDATES)]
+            return reciprocal_rank_fusion(rankings, k)
 
     report = evaluate(questions, retrieve)
     report = {
-        "experiment": "dense",
+        "experiment": args.retriever,
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_commit": _git_commit(),
-        "config": {
-            "split": args.split,
-            "chunker": args.chunker,
-            "model": args.model,
-            "retrieval_scope": "paper",
-        },
-        "index": asdict(index),
+        "config": config,
         "chunks": len(chunks),
-        "truncated_chunks": embedder.count_truncated([c.text for c in chunks]),
+        **extra,
         **report,
         "chance_fraction": {f"k={k}": chance_fraction(papers, questions, chunker, k) for k in KS},
         "answer_score": None,  # retrieval only: no generation, so no answer score or LLM cost
@@ -144,7 +173,7 @@ def main() -> None:
 
     settings.results_dir.mkdir(exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    path = settings.results_dir / f"{stamp}-dense-{args.split}-{args.chunker}.json"
+    path = settings.results_dir / f"{stamp}-{args.retriever}-{args.split}-{args.chunker}.json"
     path.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     print(f"\nWrote {path}")
