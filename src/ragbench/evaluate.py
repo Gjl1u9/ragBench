@@ -30,9 +30,11 @@ from ragbench.index import (
     build_index,
     collection_name,
 )
+from ragbench.rerank import DEFAULT_RERANKER, CrossEncoderReranker
 from ragbench.retrieve import Hit, dense_search, reciprocal_rank_fusion
 
 KS = (1, 3, 5, 10)
+RERANK_CANDIDATES = 50
 RETRIEVERS = ("dense", "bm25", "hybrid")
 # How many candidates each retriever contributes before fusion. Papers average ~54 chunks,
 # so 50 leaves fusion almost the whole paper to rank.
@@ -71,22 +73,25 @@ def score_question(question: Question, ranked: Ranked, ks: Sequence[int] = KS) -
 
 def evaluate(questions: list[Question], retrieve: Retriever, ks: Sequence[int] = KS) -> dict:
     """Run `retrieve` on every scorable question and average the metrics."""
-    rows = []
+    rows: dict[str, dict] = {}
     latencies_ms = []
     scorable = [q for q in questions if gold_sets(q)]
     for question in scorable:
         start = time.perf_counter()
         hits = retrieve(question, max(ks))
         latencies_ms.append((time.perf_counter() - start) * 1000)
-        rows.append(score_question(question, [h.paragraph_ids for h in hits], ks))
+        rows[question.id] = score_question(question, [h.paragraph_ids for h in hits], ks)
+    keys = next(iter(rows.values()))
     return {
         "questions_total": len(questions),
         "questions_scored": len(rows),
-        "metrics": {key: round(statistics.mean(r[key] for r in rows), 4) for key in rows[0]},
+        "metrics": {key: round(statistics.mean(r[key] for r in rows.values()), 4) for key in keys},
         "latency_ms": {
             "median": round(statistics.median(latencies_ms), 2),
             "p95": round(statistics.quantiles(latencies_ms, n=20)[-1], 2),
         },
+        # Kept so two runs can be compared question by question (paired tests) without rerunning.
+        "per_question": rows,
     }
 
 
@@ -108,6 +113,19 @@ def main() -> None:
     parser.add_argument("--split", default="validation", choices=["train", "validation", "test"])
     parser.add_argument("--chunker", default="paragraph", choices=sorted(CHUNKERS))
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--rerank",
+        nargs="?",
+        const=DEFAULT_RERANKER,
+        metavar="MODEL",
+        help=f"rerank the retriever's candidates with a cross-encoder (default {DEFAULT_RERANKER})",
+    )
+    parser.add_argument(
+        "--candidates",
+        type=int,
+        default=RERANK_CANDIDATES,
+        help="how many candidates to rerank (with --rerank)",
+    )
     parser.add_argument(
         "--final", action="store_true", help="required for the test split: final numbers only"
     )
@@ -157,9 +175,25 @@ def main() -> None:
             rankings = [dense(question, HYBRID_CANDIDATES), keyword(question, HYBRID_CANDIDATES)]
             return reciprocal_rank_fusion(rankings, k)
 
+    experiment = args.retriever
+    if args.rerank:
+        if args.candidates < max(KS):
+            parser.error(f"--candidates must be at least {max(KS)}")
+        experiment += "+rerank"
+        config.update(reranker=args.rerank, rerank_candidates=args.candidates)
+        # The reranker can only reorder what it is given, so this recall is its ceiling.
+        ceiling = evaluate(questions, retrieve, ks=(args.candidates,))["metrics"]
+        extra["candidate_recall"] = ceiling[f"recall@{args.candidates}"]
+
+        reranker = CrossEncoderReranker(args.rerank)
+        first_stage = retrieve
+
+        def retrieve(question: Question, k: int) -> list[Hit]:
+            return reranker.rerank(question.text, first_stage(question, args.candidates), k)
+
     report = evaluate(questions, retrieve)
     report = {
-        "experiment": args.retriever,
+        "experiment": experiment,
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_commit": _git_commit(),
         "config": config,
@@ -173,7 +207,10 @@ def main() -> None:
 
     settings.results_dir.mkdir(exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    path = settings.results_dir / f"{stamp}-{args.retriever}-{args.split}-{args.chunker}.json"
+    name = args.retriever
+    if args.rerank:
+        name += "-rerank-" + args.rerank.split("/")[-1]
+    path = settings.results_dir / f"{stamp}-{name}-{args.split}-{args.chunker}.json"
     path.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     print(f"\nWrote {path}")

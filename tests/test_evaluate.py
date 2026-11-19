@@ -67,6 +67,10 @@ def test_evaluate_averages_scored_questions_only():
     assert report["questions_scored"] == 2
     assert report["metrics"] == {"recall@1": 0.5, "mrr": 0.5}
     assert set(report["latency_ms"]) == {"median", "p95"}
+    assert report["per_question"] == {
+        "q1": {"recall@1": 1.0, "mrr": 1.0},
+        "q2": {"recall@1": 0.0, "mrr": 0.0},
+    }
 
 
 def test_chance_fraction(raw_paper):
