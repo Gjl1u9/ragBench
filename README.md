@@ -8,6 +8,33 @@ The goal is not just to answer questions, but to measure what each technique buy
 difference below is checked with a paired bootstrap 95% confidence interval
 (`python -m ragbench.compare`); "not significant" means the interval includes 0.
 
+## Final results (test split)
+
+All design choices were made on the validation split. The chosen system (hybrid retrieval +
+MiniLM reranker, top 20 passages to Claude Haiku) was then run **once** on the held-out test
+split; nothing was tuned afterwards.
+
+| Retrieval (1,351 scorable questions) | Recall@5 | Recall@10 | MRR | Latency (median) |
+|---|---|---|---|---|
+| Dense baseline | 0.618 | 0.762 | 0.519 | 13 ms |
+| Hybrid (dense + BM25, RRF) | 0.613 | 0.762 | 0.500 | 16 ms |
+| **Hybrid + MiniLM reranker** | **0.696** | **0.824** | **0.575** | 168 ms |
+
+| Generation (100 test questions, seed 0) | Answer F1 | Evidence in context | Cost est. / q | Latency (median) |
+|---|---|---|---|---|
+| Top 20 reranked passages, Claude Haiku | 0.639 (CI 0.572–0.708) | 0.896 | $0.0010 | 1.7 s |
+
+- The reranker's gain holds on unseen data: Recall@5 +0.079 over the dense baseline
+  (CI +0.055 to +0.102), MRR +0.056 (CI +0.035 to +0.076).
+- Hybrid fusion again adds nothing on its own; on test its MRR is slightly below dense
+  (−0.020, CI −0.038 to −0.002). It is kept only as the candidate source for the reranker.
+- Test Answer F1 (0.639) is higher than validation's (0.547, CI 0.467–0.628), but the two are
+  not directly comparable: test has more annotators per question (2.45 vs 1.76), and the score
+  takes the best annotator, so more annotators raise it. The test sample also has more yes/no
+  questions (17 vs 12), which Claude answered perfectly.
+
+## Development results (validation split)
+
 ### Retrieval
 
 Validation split, 923 scorable questions, retrieving within each question's paper over
@@ -85,6 +112,7 @@ uv run pytest
 - [x] Hybrid retrieval (BM25 + dense, RRF)
 - [x] Cross-encoder reranking
 - [x] Generation with Claude on a fixed 100-question dev subset
+- [x] Final evaluation on the held-out test split (run once)
 - [ ] LLM-judge check of answer F1 on a sample
 - [ ] Agentic RAG and comparison
 
