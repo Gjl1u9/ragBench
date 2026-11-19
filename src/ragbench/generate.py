@@ -157,7 +157,7 @@ def summarize(rows: dict[str, dict]) -> dict:
 
 
 async def run(args) -> dict:
-    papers, questions = load_split("validation")
+    papers, questions = load_split(args.split)
     papers_by_id = {p.id: p for p in papers}
     chunker = CHUNKERS[args.chunker]
     chunks_by_paper = {p.id: chunker(p) for p in papers}
@@ -167,14 +167,14 @@ async def run(args) -> dict:
         "context": args.context,
         "llm": args.llm,
         "prompt_version": PROMPT_VERSION,
-        "subset": {"split": "validation", "size": SUBSET_SIZE, "seed": SUBSET_SEED},
+        "subset": {"split": args.split, "size": SUBSET_SIZE, "seed": SUBSET_SEED},
         "questions_run": len(subset),
         "chunker": args.chunker,
     }
     if args.context == "retrieved":
         all_chunks = [c for cs in chunks_by_paper.values() for c in cs]
         pipeline = build_pipeline(
-            "validation", args.chunker, all_chunks, "hybrid", DEFAULT_MODEL, args.rerank
+            args.split, args.chunker, all_chunks, "hybrid", DEFAULT_MODEL, args.rerank
         )
         config.update(k=args.k, retrieval=pipeline.config)
 
@@ -220,15 +220,22 @@ def main() -> None:
     parser.add_argument("--chunker", default="paragraph", choices=sorted(CHUNKERS))
     parser.add_argument("--llm", default=DEFAULT_LLM)
     parser.add_argument("--limit", type=int, help="run only the first N subset questions")
+    parser.add_argument("--split", default="validation", choices=["validation", "test"])
+    parser.add_argument(
+        "--final", action="store_true", help="required for the test split: final numbers only"
+    )
     args = parser.parse_args()
+    if args.split == "test" and not args.final:
+        parser.error("the test split is for final reported numbers; pass --final to confirm")
 
     report = anyio.run(run, args)
     settings.results_dir.mkdir(exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     context = f"k{args.k}" if args.context == "retrieved" else "full"
+    split = "" if args.split == "validation" else f"{args.split}-"
     path = (
         settings.results_dir
-        / f"{stamp}-generate-{context}-{report['config']['questions_run']}q.json"
+        / f"{stamp}-generate-{split}{context}-{report['config']['questions_run']}q.json"
     )
     path.write_text(json.dumps(report, indent=2) + "\n")
     summary = {k: v for k, v in report.items() if k != "per_question"}

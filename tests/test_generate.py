@@ -25,6 +25,15 @@ def test_build_prompt_numbers_passages_and_ends_with_the_question(raw_paper):
     assert prompt.endswith("Question: How many layers does TinyNet have?")
 
 
+def test_test_split_requires_final_flag(monkeypatch):
+    from ragbench import generate
+
+    monkeypatch.setattr("sys.argv", ["generate", "--split", "test"])
+    monkeypatch.setattr(generate.anyio, "run", lambda *a: pytest.fail("must not run"))
+    with pytest.raises(SystemExit):
+        generate.main()
+
+
 def test_answerer_refuses_to_run_with_an_api_key(monkeypatch, tmp_path):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     with pytest.raises(RuntimeError):
