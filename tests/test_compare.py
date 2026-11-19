@@ -16,6 +16,12 @@ def test_compare_counts_wins_and_losses():
     assert (row["better"], row["worse"], row["same"]) == (1, 1, 1)
 
 
+def test_compare_skips_text_flags_and_missing_values():
+    base = {"per_question": {"q1": {"answer_f1": 0.5, "prediction": "a", "cached": True}}}
+    cand = {"per_question": {"q1": {"answer_f1": 1.0, "prediction": "b", "cached": False}}}
+    assert list(compare(base, cand)) == ["answer_f1"]
+
+
 def test_bootstrap_interval_is_tight_for_a_constant_difference():
     assert paired_bootstrap([0.2] * 50) == pytest.approx((0.2, 0.2))
 

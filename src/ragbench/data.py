@@ -108,10 +108,13 @@ def _parse_answer(raw: dict, by_text: dict[str, str], headings: set[str]) -> Ans
     elif raw["extractive_spans"]:
         spans = list(raw["extractive_spans"])
         type_, text = "extractive", ", ".join(spans)
+    # Same precedence as the official QASPER evaluator: free-form before yes/no.
+    elif raw["free_form_answer"]:
+        type_, text, spans = "abstractive", raw["free_form_answer"], []
     elif raw["yes_no"] is not None:
         type_, text, spans = "yes_no", "Yes" if raw["yes_no"] else "No", []
     else:
-        type_, text, spans = "abstractive", raw["free_form_answer"], []
+        raise ValueError("annotation has no answer")
 
     evidence_ids: list[str] = []
     heading_ev: list[str] = []

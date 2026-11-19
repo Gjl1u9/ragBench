@@ -14,34 +14,19 @@ import json
 import statistics
 import subprocess
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from qdrant_client import QdrantClient
-
-from ragbench.bm25 import BM25Retriever
 from ragbench.chunking import CHUNKERS
 from ragbench.config import settings
 from ragbench.data import Paper, Question, load_split
-from ragbench.index import (
-    DEFAULT_MODEL,
-    SentenceTransformerEmbedder,
-    build_index,
-    collection_name,
-)
-from ragbench.rerank import DEFAULT_RERANKER, CrossEncoderReranker
-from ragbench.retrieve import Hit, dense_search, reciprocal_rank_fusion
+from ragbench.index import DEFAULT_MODEL
+from ragbench.pipeline import RERANK_CANDIDATES, RETRIEVERS, Retriever, build_pipeline
+from ragbench.rerank import DEFAULT_RERANKER
 
 KS = (1, 3, 5, 10)
-RERANK_CANDIDATES = 50
-RETRIEVERS = ("dense", "bm25", "hybrid")
-# How many candidates each retriever contributes before fusion. Papers average ~54 chunks,
-# so 50 leaves fusion almost the whole paper to rank.
-HYBRID_CANDIDATES = 50
 
 Ranked = Sequence[Sequence[str]]  # paragraph ids of each retrieved chunk, best first
-Retriever = Callable[[Question, int], list[Hit]]
 
 
 def recall_at_k(gold: set[str], ranked: Ranked, k: int) -> float:
@@ -102,7 +87,7 @@ def chance_fraction(papers: list[Paper], questions: list[Question], chunker, k: 
     return round(statistics.mean(fractions), 4)
 
 
-def _git_commit() -> str:
+def git_commit() -> str:
     out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True)
     return out.stdout.strip()
 
@@ -137,68 +122,27 @@ def main() -> None:
     chunker = CHUNKERS[args.chunker]
     chunks = [c for p in papers for c in chunker(p)]
 
-    uses_dense = args.retriever in ("dense", "hybrid")
-    config = {
-        "retriever": args.retriever,
-        "split": args.split,
-        "chunker": args.chunker,
-        "model": args.model if uses_dense else None,
-        "retrieval_scope": "paper",
-    }
-    extra: dict = {}
-
-    if uses_dense:
-        embedder = SentenceTransformerEmbedder(args.model)
-        client = QdrantClient(url=settings.qdrant_url)
-        collection = collection_name(args.split, args.chunker, args.model)
-        extra["index"] = asdict(build_index(client, collection, chunks, embedder))
-        extra["truncated_chunks"] = embedder.count_truncated([c.text for c in chunks])
-
-        def dense(question: Question, k: int) -> list[Hit]:
-            vector = embedder.encode_query(question.text)
-            return dense_search(client, collection, vector, question.paper_id, k)
-
-    if args.retriever in ("bm25", "hybrid"):
-        bm25 = BM25Retriever(chunks)
-
-        def keyword(question: Question, k: int) -> list[Hit]:
-            return bm25.search(question.text, question.paper_id, k)
-
-    if args.retriever == "dense":
-        retrieve = dense
-    elif args.retriever == "bm25":
-        retrieve = keyword
-    else:
-        config.update(fusion="rrf", rrf_k=60, candidates=HYBRID_CANDIDATES)
-
-        def retrieve(question: Question, k: int) -> list[Hit]:
-            rankings = [dense(question, HYBRID_CANDIDATES), keyword(question, HYBRID_CANDIDATES)]
-            return reciprocal_rank_fusion(rankings, k)
+    if args.rerank and args.candidates < max(KS):
+        parser.error(f"--candidates must be at least {max(KS)}")
+    pipeline = build_pipeline(
+        args.split, args.chunker, chunks, args.retriever, args.model, args.rerank, args.candidates
+    )
 
     experiment = args.retriever
     if args.rerank:
-        if args.candidates < max(KS):
-            parser.error(f"--candidates must be at least {max(KS)}")
         experiment += "+rerank"
-        config.update(reranker=args.rerank, rerank_candidates=args.candidates)
         # The reranker can only reorder what it is given, so this recall is its ceiling.
-        ceiling = evaluate(questions, retrieve, ks=(args.candidates,))["metrics"]
-        extra["candidate_recall"] = ceiling[f"recall@{args.candidates}"]
+        ceiling = evaluate(questions, pipeline.first_stage, ks=(args.candidates,))["metrics"]
+        pipeline.extra["candidate_recall"] = ceiling[f"recall@{args.candidates}"]
 
-        reranker = CrossEncoderReranker(args.rerank)
-        first_stage = retrieve
-
-        def retrieve(question: Question, k: int) -> list[Hit]:
-            return reranker.rerank(question.text, first_stage(question, args.candidates), k)
-
-    report = evaluate(questions, retrieve)
+    report = evaluate(questions, pipeline.retrieve)
     report = {
         "experiment": experiment,
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
-        "git_commit": _git_commit(),
-        "config": config,
+        "git_commit": git_commit(),
+        "config": pipeline.config,
         "chunks": len(chunks),
-        **extra,
+        **pipeline.extra,
         **report,
         "chance_fraction": {f"k={k}": chance_fraction(papers, questions, chunker, k) for k in KS},
         "answer_score": None,  # retrieval only: no generation, so no answer score or LLM cost

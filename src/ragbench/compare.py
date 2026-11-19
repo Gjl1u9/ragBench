@@ -21,13 +21,25 @@ def paired_bootstrap(diffs: list[float], samples: int = 2000, seed: int = 0) -> 
     return means[int(0.025 * samples)], means[int(0.975 * samples) - 1]
 
 
+def _numeric_fields(base: dict, cand: dict, ids: list[str]) -> list[str]:
+    """Fields that are numbers for every question in both runs (skips text, flags, None)."""
+
+    def numeric(value) -> bool:
+        return isinstance(value, int | float) and not isinstance(value, bool)
+
+    first = base[ids[0]]
+    return [
+        key for key in first if all(numeric(run[q].get(key)) for run in (base, cand) for q in ids)
+    ]
+
+
 def compare(baseline: dict, candidate: dict) -> dict:
     base, cand = baseline["per_question"], candidate["per_question"]
     if base.keys() != cand.keys():
         raise ValueError("runs scored different questions; compare runs on the same split")
     ids = sorted(base)
     out = {}
-    for metric in next(iter(base.values())):
+    for metric in _numeric_fields(base, cand, ids):
         diffs = [cand[q][metric] - base[q][metric] for q in ids]
         low, high = paired_bootstrap(diffs)
         out[metric] = {

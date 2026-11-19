@@ -19,7 +19,9 @@ docker compose up -d          # start Qdrant (Docker runs on OrbStack)
 uv run pytest                 # all tests; integration tests need Qdrant
 uv run pytest -m "not integration"
 uv run ruff check . && uv run ruff format .
-uv run python -m ragbench.evaluate --retriever hybrid --split validation   # dense|bm25|hybrid; no LLM calls
+uv run python -m ragbench.evaluate --retriever hybrid --rerank --split validation   # no LLM calls
+uv run python -m ragbench.compare results/<a>.json results/<b>.json   # paired bootstrap CIs
+uv run python -m ragbench.generate --context retrieved --k 10 --limit 5   # pilot; calls Claude
 ```
 
 ## Layout
