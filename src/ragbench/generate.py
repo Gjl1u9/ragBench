@@ -26,6 +26,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
     query,
 )
 
@@ -66,44 +67,67 @@ def build_prompt(paper: Paper, question: Question, chunks: list[Chunk]) -> str:
 
 
 class ClaudeAnswerer:
-    """Calls Claude through the Agent SDK, with a response cache on disk."""
+    """Calls Claude through the Agent SDK, with a response cache on disk.
 
-    def __init__(self, model: str = DEFAULT_LLM, cache_dir: Path | None = None):
+    By default a call is one turn with no tools. Agentic runs pass their own tool server,
+    allowed tools and turn limit, plus a `cache_extra` describing them so that runs with
+    different tools never share cache entries.
+    """
+
+    def __init__(
+        self,
+        model: str = DEFAULT_LLM,
+        cache_dir: Path | None = None,
+        system_prompt: str = SYSTEM_PROMPT,
+    ):
         if os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError(
                 "ANTHROPIC_API_KEY is set: it would bill the API instead of the subscription"
             )
         self.model = model
+        self.system_prompt = system_prompt
         self.cache_dir = cache_dir or settings.results_dir / "llm_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.calls_made = 0
 
-    def _options(self) -> ClaudeAgentOptions:
-        return ClaudeAgentOptions(
-            system_prompt=SYSTEM_PROMPT,
-            model=self.model,
-            tools=[],  # no tools at all (allowed_tools only auto-approves; it removes nothing)
-            setting_sources=[],  # no user/project settings, CLAUDE.md or plugins
-            strict_mcp_config=True,  # ignore the user's MCP servers
-            mcp_servers={},
-            max_turns=1,
-            cwd=tempfile.gettempdir(),  # away from this repo's CLAUDE.md
-        )
+    def _options(self, **overrides) -> ClaudeAgentOptions:
+        options = {
+            "system_prompt": self.system_prompt,
+            "model": self.model,
+            "tools": [],  # no built-in tools (allowed_tools only auto-approves; it removes nothing)
+            "setting_sources": [],  # no user/project settings, CLAUDE.md or plugins
+            "strict_mcp_config": True,  # ignore the user's MCP servers
+            "mcp_servers": {},
+            "max_turns": 1,
+            "cwd": tempfile.gettempdir(),  # away from this repo's CLAUDE.md
+        }
+        return ClaudeAgentOptions(**{**options, **overrides})
 
-    def cache_key(self, prompt: str) -> str:
-        payload = json.dumps({"model": self.model, "system": SYSTEM_PROMPT, "prompt": prompt})
-        return hashlib.sha256(payload.encode()).hexdigest()
+    def cache_key(self, prompt: str, cache_extra: dict | None = None) -> str:
+        # Key order matters for the hash: keep this layout so existing cache entries stay valid.
+        payload = {"model": self.model, "system": self.system_prompt, "prompt": prompt}
+        if cache_extra:
+            payload["extra"] = json.dumps(cache_extra, sort_keys=True)
+        return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
 
-    async def answer(self, prompt: str) -> dict:
-        path = self.cache_dir / f"{self.cache_key(prompt)}.json"
+    async def answer(self, prompt: str, cache_extra: dict | None = None, **overrides) -> dict:
+        path = self.cache_dir / f"{self.cache_key(prompt, cache_extra)}.json"
         if path.exists():
             return {**json.loads(path.read_text()), "cached": True}
 
         text: list[str] = []
+        tool_calls: list[dict] = []
+        turns = 0
         result: ResultMessage | None = None
-        async for message in query(prompt=prompt, options=self._options()):
+        async for message in query(prompt=prompt, options=self._options(**overrides)):
             if isinstance(message, AssistantMessage):
+                turns += 1
                 text += [b.text for b in message.content if isinstance(b, TextBlock)]
+                tool_calls += [
+                    {"name": b.name, "input": b.input}
+                    for b in message.content
+                    if isinstance(b, ToolUseBlock)
+                ]
             elif isinstance(message, ResultMessage):
                 result = message
         if result is None or result.is_error:
@@ -111,8 +135,12 @@ class ClaudeAnswerer:
 
         self.calls_made += 1
         usage = result.usage or {}
+        # With tools, intermediate turns also produce text; the final answer is the result.
+        final = result.result if result.result is not None else "".join(text)
         record = {
-            "text": "".join(text).strip(),
+            "text": final.strip(),
+            "tool_calls": tool_calls,
+            "assistant_messages": turns,
             "model": next(iter(result.model_usage or {}), self.model),
             "input_tokens": usage.get("input_tokens", 0),
             "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),

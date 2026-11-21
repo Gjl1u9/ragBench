@@ -55,6 +55,19 @@ def test_answerer_serves_cached_responses_without_calling_claude(monkeypatch, tm
     assert answerer.calls_made == 0
 
 
+def test_cache_key_format_is_stable(monkeypatch, tmp_path):
+    """Changing the key layout would orphan every cached answer and re-spend the quota."""
+    import hashlib
+
+    from ragbench.generate import SYSTEM_PROMPT
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    answerer = ClaudeAnswerer(model="haiku", cache_dir=tmp_path)
+    legacy = json.dumps({"model": "haiku", "system": SYSTEM_PROMPT, "prompt": "p"})
+    assert answerer.cache_key("p") == hashlib.sha256(legacy.encode()).hexdigest()
+    assert answerer.cache_key("p", {"tools": "search"}) != answerer.cache_key("p")
+
+
 def test_cache_key_depends_on_model_and_prompt(monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     haiku = ClaudeAnswerer(model="haiku", cache_dir=tmp_path)

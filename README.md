@@ -5,8 +5,8 @@ An evaluated RAG system over scientific papers, built on the
 with gold answers and evidence paragraphs).
 
 The goal is not just to answer questions, but to measure what each technique buys. Every
-difference below is checked with a paired bootstrap 95% confidence interval
-(`python -m ragbench.compare`); "not significant" means the interval includes 0.
+difference below is checked with a paired bootstrap 95% confidence interval.
+A difference is considered statistically significant when the interval excludes 0.
 
 ## Final results (test split)
 
@@ -69,6 +69,10 @@ project settings. Answer F1 is QASPER's official token F1, best over annotators.
 | Top 10 passages | 0.519 | 0.832 | 2,900 | $0.0006 | 1.8 s |
 | Top 20 passages | 0.547 | 0.896 | 4,800 | $0.0010 | 1.8 s |
 | Whole paper (no retrieval) | 0.551 | 1.000 | 9,100 | $0.0019 | 1.8 s |
+| Agentic: Claude searches, ≤ 4 × 5 passages | 0.492 | 0.804 | 5,900¹ | $0.0007 | 2.3 s |
+
+¹ About half of it is earlier turns re-read from the prompt cache, which is why it costs less
+than top 20 despite more tokens.
 
 - Top 5 is significantly worse than top 10 (−0.058, CI −0.105 to −0.014). Top 20 and the whole
   paper are not significantly better than top 10 on 100 questions (+0.028 and +0.032, CIs
@@ -78,9 +82,49 @@ project settings. Answer F1 is QASPER's official token F1, best over annotators.
   answerable question 17 times with top 5, 11 with top 10, 8 with top 20, and 5 with the whole
   paper. It answered 4 of the 8 truly unanswerable questions in every setting.
 - Token F1 is strict: "six experts" vs gold "five annotators", or "0.7 BLEU" vs "On average
-  0.64", score 0. An LLM-judge check on a sample is still to do.
+  0.64", score 0. The LLM-judge check below measures how much this matters.
 - Cost is the SDK's estimate (the subscription is not billed per call). Latency is dominated
   by Claude Code start-up, so it barely changes with context size.
+
+### Agentic RAG
+
+Claude gets one tool, `search`, over the question's paper (the same hybrid + MiniLM pipeline)
+and writes its own queries: up to 4 searches of 5 passages, so at most the 20 passages of the
+fixed top-20 setup. It compares to top 20 on the same 100 questions:
+
+- Answer F1 is lower (−0.055, CI −0.116 to +0.002), just short of significant.
+- It stops early: 1.9 searches on average (1 search on 32 questions, 4 on only 4), so it sees
+  7.3 distinct passages instead of 20, and the evidence is in what it saw 80% of the time
+  (90% for top 20).
+- Its answers are wordier (median 13 words vs 4), which token F1 penalises. Judged for
+  meaning on the same 50 questions, the two are level (0.700 vs 0.670, +0.030, CI −0.07 to
+  +0.14).
+- It is slower (2.3 s vs 1.8 s median) because it takes 2–5 turns.
+
+So on QASPER, where the right paper is known and a short question usually needs one lookup,
+letting the model search buys nothing over a well-ranked fixed context. Retrieval quality
+(the reranker) mattered far more than retrieval strategy.
+
+### LLM judge
+
+Claude Sonnet judged a fixed random sample of 50 of the 100 answers (seed 0): it reads the
+question, every annotator's reference and the candidate, and returns correct / partial /
+incorrect (scored 1 / 0.5 / 0). It does not see the paper, so it checks agreement with the
+references. `python -m ragbench.judge results/<run>.json --sample 50`.
+
+| Answers judged (same 50 questions) | Answer F1 | Judge score | Correct / partial / incorrect |
+|---|---|---|---|
+| Top 20 passages | 0.519 | 0.670 | 31 / 5 / 14 |
+| Agentic | 0.468 | 0.700 | 32 / 6 / 12 |
+
+- F1 understates answers that are right in other words: for top 20, 7 of the 11 answers with
+  0 < F1 < 0.5 were judged correct ("SBERT can be tuned in less than 20 minutes" vs gold
+  "20 minutes", F1 0.36). For the agentic run, 11 of its 27 answers below F1 0.5 were.
+- F1 did not overstate: every answer with F1 = 0 was judged incorrect, and no answer with
+  F1 ≥ 0.5 was.
+- Read Answer F1 as a lower bound that is harsher on verbose systems. It is still the right
+  metric for comparing runs with the same answer style, and it costs nothing to compute.
+- Judging 50 answers costs about $0.21 (SDK estimate) with Sonnet.
 
 ## Stack
 
@@ -102,6 +146,20 @@ docker compose up -d          # Qdrant on localhost:6333
 uv run pytest
 ```
 
+## Compare evaluation runs
+
+After setup, run this from the repository root to compare the dense baseline with the
+MiniLM reranker on the test split:
+
+```bash
+.venv/bin/python -m ragbench.compare \
+  results/20261119T033633-dense-test-paragraph.json \
+  results/20261119T034151-hybrid-rerank-ms-marco-MiniLM-L-6-v2-test-paragraph.json
+```
+
+Evaluation outputs are stored locally in `results/`. If these files are absent, use two
+saved runs that scored the same questions. Pass the baseline first and the candidate second.
+
 ## Roadmap
 
 - [x] Project setup: environment, Qdrant, tests
@@ -113,8 +171,8 @@ uv run pytest
 - [x] Cross-encoder reranking
 - [x] Generation with Claude on a fixed 100-question dev subset
 - [x] Final evaluation on the held-out test split (run once)
-- [ ] LLM-judge check of answer F1 on a sample
-- [ ] Agentic RAG and comparison
+- [x] LLM-judge check of answer F1 on a sample
+- [x] Agentic RAG and comparison
 
 ## License
 
